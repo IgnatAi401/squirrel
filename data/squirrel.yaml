@@ -25,7 +25,9 @@ status_icon:
   show: true
 
 style:
-  color_scheme: native
+  # 仿 macOS 原生简体拼音的候选条，浅色／深色随系统外观切换
+  color_scheme: mac_capsule
+  color_scheme_dark: mac_capsule_dark
   # Optional: define both light and dark color schemes to match system appearance
   #color_scheme: solarized_light
   #color_scheme_dark: solarized_dark
@@ -78,6 +80,84 @@ style:
 preset_color_schemes:
   native:
     name: 系統配色
+
+  mac_capsule:
+    name: 原生胶囊／Mac Capsule
+    author: IgnatAi401
+    # 布局仿 macOS 原生简体拼音：单行横排、拼音内嵌在输入位置、系统字体
+    candidate_list_layout: linear
+    text_orientation: horizontal
+    inline_preedit: true
+    inline_candidate: false
+    translucency: true             # 液态玻璃背景（macOS 26），需要 back_color 带透明度
+    mutual_exclusive: false
+    candidate_format: "[label]\u2005[candidate] [comment]"
+    font_face: ""                  # 留空 = 系统字体（与原生一致，也不影响彩色 Emoji）
+    font_point: 16
+    label_font_face: ""
+    label_font_point: 12
+    comment_font_face: ""
+    comment_font_point: 13
+    capsule: true                  # 胶囊形外框和选中块（Squirrel fork 新增，仅横排有效）
+    corner_radius: 0               # 胶囊模式下圆角自动取高度的一半
+    hilited_corner_radius: 0
+    border_height: 4               # 文字到上下边的距离
+    border_width: 8                # 文字到左右边的距离
+    line_spacing: 0
+    spacing: 0
+    shadow_size: 0
+    color_space: srgb
+    # 颜色格式 0xBBGGRR（注意是 BGR 顺序）
+    back_color: 0x00F5F5F5         # 完全透明，只留液态玻璃（前两位是透明度，00 最透）
+    border_color: 0x1A000000       # 细边：10% 黑
+    text_color: 0x8E8A8A
+    candidate_text_color: 0x1F1D1D
+    label_color: 0x8E8A8A
+    comment_text_color: 0x8E8A8A
+    hilited_text_color: 0x1F1D1D
+    hilited_candidate_back_color: 0x395AB5  # 选中底色 #B55A39：略压暗的 Claude 橙（浅色下更沉一点）
+    hilited_candidate_text_color: 0xFFFFFF
+    hilited_candidate_label_color: 0xBCC8E6
+    hilited_comment_text_color: 0xBCC8E6
+
+  mac_capsule_dark:
+    name: 原生胶囊·夜／Mac Capsule Dark
+    author: IgnatAi401
+    # 布局仿 macOS 原生简体拼音：单行横排、拼音内嵌在输入位置、系统字体
+    candidate_list_layout: linear
+    text_orientation: horizontal
+    inline_preedit: true
+    inline_candidate: false
+    translucency: true             # 液态玻璃背景（macOS 26），需要 back_color 带透明度
+    mutual_exclusive: false
+    candidate_format: "[label]\u2005[candidate] [comment]"
+    font_face: ""                  # 留空 = 系统字体（与原生一致，也不影响彩色 Emoji）
+    font_point: 16
+    label_font_face: ""
+    label_font_point: 12
+    comment_font_face: ""
+    comment_font_point: 13
+    capsule: true                  # 胶囊形外框和选中块（Squirrel fork 新增，仅横排有效）
+    corner_radius: 0               # 胶囊模式下圆角自动取高度的一半
+    hilited_corner_radius: 0
+    border_height: 4               # 文字到上下边的距离
+    border_width: 8                # 文字到左右边的距离
+    line_spacing: 0
+    spacing: 0
+    shadow_size: 0
+    color_space: srgb
+    # 颜色格式 0xBBGGRR（注意是 BGR 顺序）
+    back_color: 0x0038292A         # 完全透明，只留液态玻璃（前两位是透明度，00 最透）
+    border_color: 0x26FFFFFF       # 细边：15% 白
+    text_color: 0x938E8E
+    candidate_text_color: 0xF0EBEB
+    label_color: 0x938E8E
+    comment_text_color: 0x938E8E
+    hilited_text_color: 0xF0EBEB
+    hilited_candidate_back_color: 0x486AC7  # 选中底色 #C76A48：略压暗的 Claude 橙
+    hilited_candidate_text_color: 0xFFFFFF
+    hilited_candidate_label_color: 0xBCC8E6
+    hilited_comment_text_color: 0xBCC8E6
 
   aqua:
     name: 碧水／Aqua

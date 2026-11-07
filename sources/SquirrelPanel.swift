@@ -248,7 +248,15 @@ final class SquirrelPanel: NSPanel {
         preventLineBreaks(in: line)
       }
 
-      let lineSeparator = NSAttributedString(string: linear ? "  " : "\n", attributes: attrs)
+      let lineSeparator: NSAttributedString
+      if theme.isCapsule {
+        // Leave room for the highlight padding on both sides plus a small gap, like the native candidate bar.
+        // Built from fixed-width spaces rather than kerning: TextKit attributes part of a kern to the next
+        // character's selection rect, which would push the highlight off-center.
+        lineSeparator = NSAttributedString(string: spacer(width: theme.capsuleSeparatorWidth, attributes: attrs), attributes: attrs)
+      } else {
+        lineSeparator = NSAttributedString(string: linear ? "  " : "\n", attributes: attrs)
+      }
       if i > 0 {
         text.append(lineSeparator)
       }
@@ -541,6 +549,21 @@ private extension SquirrelPanel {
     for range in string.ranges(of: placeholder).reversed() {
       text.replaceCharacters(in: convert(range: range, in: string), with: replacement)
     }
+  }
+
+  func spacer(width target: CGFloat, attributes: [NSAttributedString.Key: Any]) -> String {
+    let spaces = ["\u{2003}", "\u{2002}", "\u{2004}", "\u{2005}", "\u{2009}", "\u{200A}"].map {
+      ($0, NSAttributedString(string: $0, attributes: attributes).size().width)
+    }
+    var result = ""
+    var remaining = target
+    for (space, width) in spaces where width > 0 {
+      while remaining - width >= -width / 2 {
+        result += space
+        remaining -= width
+      }
+    }
+    return result.isEmpty ? " " : result
   }
 
   func preventLineBreaks(in text: NSMutableAttributedString) {

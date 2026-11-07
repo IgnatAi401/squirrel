@@ -210,7 +210,15 @@ final class SquirrelView: NSView {
     }
 
     NSBezierPath.defaultLineWidth = 0
-    backgroundPath = drawSmoothLines(rectVertex(of: backgroundRect), straightCorner: Set(), alpha: 0.3 * theme.cornerRadius, beta: 1.4 * theme.cornerRadius)
+    if theme.isCapsule {
+      backgroundPath = capsulePath(backgroundRect, maxRadius: max(theme.cornerRadius, 20))
+      if hilightedIndex >= 0 && hilightedIndex < candidateRanges.count && highlightedPath != nil,
+         let path = capsuleHighlightPath(range: candidateRanges[hilightedIndex]) {
+        highlightedPath = path.mutableCopy()
+      }
+    } else {
+      backgroundPath = drawSmoothLines(rectVertex(of: backgroundRect), straightCorner: Set(), alpha: 0.3 * theme.cornerRadius, beta: 1.4 * theme.cornerRadius)
+    }
 
     self.layer?.sublayers = nil
     let backPath = backgroundPath?.mutableCopy()
@@ -242,9 +250,10 @@ final class SquirrelView: NSView {
       layer.mask = mask
       panelLayer.addSublayer(layer)
     }
-    if theme.borderLineWidth > 0, let color = theme.borderColor {
+    if theme.borderLineWidth > 0 || theme.isCapsule, let color = theme.borderColor {
       let borderLayer = shapeFromPath(path: backgroundPath)
-      borderLayer.lineWidth = theme.borderLineWidth * 2
+      // The layer is masked by the background path, so only the inner half of the stroke is visible.
+      borderLayer.lineWidth = theme.isCapsule ? 2 : theme.borderLineWidth * 2
       borderLayer.strokeColor = color.cgColor
       borderLayer.fillColor = nil
       panelLayer.addSublayer(borderLayer)
@@ -703,6 +712,38 @@ private extension SquirrelView {
       resultingPath = nil
     }
     return resultingPath
+  }
+
+  func capsulePath(_ rect: NSRect, maxRadius: CGFloat) -> CGPath {
+    let radius = min(rect.height / 2, rect.width / 2, maxRadius)
+    return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+  }
+
+  // Highlight for capsule mode: the candidate's text box, padded so that a small, even margin
+  // remains between the highlight and the panel edge. Returns nil when the candidate wraps.
+  func capsuleHighlightPath(range: NSRange) -> CGPath? {
+    // Leave out trailing whitespace (e.g. the space before an empty [comment]) so the highlight stays symmetric.
+    var range = range
+    if let string = textContentStorage.attributedString?.string as NSString?, NSMaxRange(range) <= string.length {
+      while range.length > 0, let scalar = UnicodeScalar(string.character(at: NSMaxRange(range) - 1)),
+            CharacterSet.whitespaces.contains(scalar) {
+        range.length -= 1
+      }
+    }
+    guard let textRange = convert(range: range) else { return nil }
+    var lineCount = 0
+    textLayoutManager.enumerateTextSegments(in: textRange, type: .selection, options: [.rangeNotRequired]) { _, _, _, _ in
+      lineCount += 1
+      return true
+    }
+    guard lineCount == 1 else { return nil }
+    let inset = currentTheme.edgeInset
+    let padding = currentTheme.capsulePadding
+    var rect = contentRect(range: textRange)
+    rect.origin.x += inset.width
+    rect.origin.y += inset.height
+    rect = rect.insetBy(dx: -padding.width, dy: -padding.height)
+    return CGPath(roundedRect: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2, transform: nil)
   }
 
   func carveInset(rect: NSRect) -> NSRect {

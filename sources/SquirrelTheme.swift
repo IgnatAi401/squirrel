@@ -69,6 +69,8 @@ final class SquirrelTheme {
   private(set) var inlinePreedit = false
   private(set) var inlineCandidate = false
   private(set) var showPaging = false
+  // Capsule-shaped panel and highlight, mimicking the macOS native Pinyin candidate bar (linear layout only).
+  private(set) var capsule = false
 
   private var fonts = [NSFont]()
   private var labelFonts = [NSFont]()
@@ -183,6 +185,12 @@ final class SquirrelTheme {
     NSSize(width: borderWidth + cornerRadius, height: borderHeight + cornerRadius)
   }
   private(set) lazy var borderLineWidth: CGFloat = min(borderHeight, borderWidth)
+  var isCapsule: Bool { capsule && linear && !vertical }
+  // Capsule geometry: a small even margin between highlight and panel edge, the rest of the edge inset pads the text.
+  var capsuleMargin: CGFloat { min(edgeInset.width, edgeInset.height) / 2 }
+  var capsulePadding: NSSize { NSSize(width: edgeInset.width - capsuleMargin, height: edgeInset.height - capsuleMargin) }
+  // Gap between two candidates' text: both highlight paddings plus a visible space between highlights.
+  var capsuleSeparatorWidth: CGFloat { capsulePadding.width * 2 + 6 }
   private(set) var candidateFormat: String {
     get {
       _candidateFormat
@@ -214,6 +222,7 @@ final class SquirrelTheme {
     mutualExclusive ?= config.getBool("style/mutual_exclusive")
     memorizeSize ?= config.getBool("style/memorize_size")
     showPaging ?= config.getBool("style/show_paging")
+    capsule ?= config.getBool("style/capsule")
 
     statusMessageType ?= .init(rawValue: config.getString("style/status_message_type") ?? "")
     candidateFormat ?= config.getString("style/candidate_format")
@@ -270,6 +279,7 @@ final class SquirrelTheme {
         translucency ?= config.getBool("\(prefix)/translucency")
         mutualExclusive ?= config.getBool("\(prefix)/mutual_exclusive")
         showPaging ?= config.getBool("\(prefix)/show_paging")
+        capsule ?= config.getBool("\(prefix)/capsule")
         candidateFormat ?= config.getString("\(prefix)/candidate_format")
         fontName ?= config.getString("\(prefix)/font_face")
         fontSize ?= config.getDouble("\(prefix)/font_point")
