@@ -243,6 +243,13 @@ final class SquirrelPanel: NSPanel {
       let labeledLine = line.copy() as! NSAttributedString
       replace(placeholder: "[candidate]", in: line, with: candidateText)
       replace(placeholder: "[comment]", in: line, with: commentText)
+      if theme.isCapsule {
+        // Drop trailing whitespace (e.g. before an empty [comment]) so the panel's right edge hugs the last highlight.
+        while line.length > 0, let scalar = UnicodeScalar((line.string as NSString).character(at: line.length - 1)),
+              CharacterSet.whitespaces.contains(scalar) {
+          line.deleteCharacters(in: NSRange(location: line.length - 1, length: 1))
+        }
+      }
 
       if line.length <= 10 {
         preventLineBreaks(in: line)
