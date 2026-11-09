@@ -71,6 +71,8 @@ final class SquirrelTheme {
   private(set) var showPaging = false
   // Capsule-shaped panel and highlight, mimicking the macOS native Pinyin candidate bar (linear layout only).
   private(set) var capsule = false
+  // Rows shown when the capsule bar expands into a grid on paging (0 or 1 keeps the single bar).
+  private(set) var capsuleExpandRows = 5
 
   private var fonts = [NSFont]()
   private var labelFonts = [NSFont]()
@@ -186,6 +188,7 @@ final class SquirrelTheme {
   }
   private(set) lazy var borderLineWidth: CGFloat = min(borderHeight, borderWidth)
   var isCapsule: Bool { capsule && linear && !vertical }
+  var expandRows: Int { isCapsule ? capsuleExpandRows : 0 }
   // Capsule geometry: a small even margin between highlight and panel edge, the rest of the edge inset pads the text.
   var capsuleMargin: CGFloat { min(edgeInset.width, edgeInset.height) / 2 }
   var capsulePadding: NSSize { NSSize(width: edgeInset.width - capsuleMargin, height: edgeInset.height - capsuleMargin) }
@@ -223,6 +226,7 @@ final class SquirrelTheme {
     memorizeSize ?= config.getBool("style/memorize_size")
     showPaging ?= config.getBool("style/show_paging")
     capsule ?= config.getBool("style/capsule")
+    capsuleExpandRows ?= config.getDouble("style/capsule_expand_rows").map { Int($0) }
 
     statusMessageType ?= .init(rawValue: config.getString("style/status_message_type") ?? "")
     candidateFormat ?= config.getString("style/candidate_format")
@@ -280,6 +284,7 @@ final class SquirrelTheme {
         mutualExclusive ?= config.getBool("\(prefix)/mutual_exclusive")
         showPaging ?= config.getBool("\(prefix)/show_paging")
         capsule ?= config.getBool("\(prefix)/capsule")
+        capsuleExpandRows ?= config.getDouble("\(prefix)/capsule_expand_rows").map { Int($0) }
         candidateFormat ?= config.getString("\(prefix)/candidate_format")
         fontName ?= config.getString("\(prefix)/font_face")
         fontSize ?= config.getDouble("\(prefix)/font_point")

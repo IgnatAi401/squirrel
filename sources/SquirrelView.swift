@@ -33,6 +33,11 @@ final class SquirrelView: NSView {
   var canPageDown: Bool = false
   var highlightedPreeditRange: NSRange = .empty
   var separatorWidth: CGFloat = 0
+  // Capsule bar expanded into a multi-row grid: drawn as a rounded rectangle instead of a capsule.
+  var isGrid = false
+  // While the panel animates its size, the background is drawn at this size (from the top-left) and text is clipped to it.
+  var revealSize: NSSize?
+  var revealRadius: CGFloat?
   var shape = CAShapeLayer()
   private var downPath: CGPath?
   private var upPath: CGPath?
@@ -128,6 +133,10 @@ final class SquirrelView: NSView {
 
   // swiftlint:disable:next cyclomatic_complexity
   override func draw(_ dirtyRect: NSRect) {
+    // Layer changes must land at once: an implicit animation would make the glass mask lag behind the panel.
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    defer { CATransaction.commit() }
     var backgroundPath: CGPath?
     var preeditPath: CGPath?
     var candidatePaths: CGMutablePath?
@@ -137,6 +146,9 @@ final class SquirrelView: NSView {
 
     var containingRect = self.bounds
     containingRect.size.width -= theme.pagingOffset
+    if let revealSize {
+      containingRect.size = NSSize(width: min(revealSize.width, containingRect.width), height: min(revealSize.height, containingRect.height))
+    }
     let backgroundRect = containingRect
 
     var preeditRect = NSRect.zero
@@ -211,7 +223,8 @@ final class SquirrelView: NSView {
 
     NSBezierPath.defaultLineWidth = 0
     if theme.isCapsule {
-      backgroundPath = capsulePath(backgroundRect, maxRadius: max(theme.cornerRadius, 20))
+      let radius = min(revealRadius ?? capsuleRadius(for: backgroundRect.size), backgroundRect.height / 2, backgroundRect.width / 2)
+      backgroundPath = CGPath(roundedRect: backgroundRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
       if hilightedIndex >= 0 && hilightedIndex < candidateRanges.count && highlightedPath != nil,
          let path = capsuleHighlightPath(range: candidateRanges[hilightedIndex]) {
         highlightedPath = path.mutableCopy()
@@ -307,6 +320,19 @@ final class SquirrelView: NSView {
     }
 
     shape.path = panelPath
+
+    if revealSize != nil {
+      let mask = CAShapeLayer()
+      mask.path = backgroundPath
+      textView.layer?.mask = mask
+    } else {
+      textView.layer?.mask = nil
+    }
+  }
+
+  /// Corner radius of the capsule background at a given size: a capsule for the bar, a rounded rectangle for the grid.
+  func capsuleRadius(for size: NSSize) -> CGFloat {
+    min(size.height / 2, size.width / 2, isGrid ? max(currentTheme.cornerRadius, 12) : max(currentTheme.cornerRadius, 20))
   }
 
   func click(at clickPoint: NSPoint) -> (Int?, Int?, Bool?) {
@@ -712,11 +738,6 @@ private extension SquirrelView {
       resultingPath = nil
     }
     return resultingPath
-  }
-
-  func capsulePath(_ rect: NSRect, maxRadius: CGFloat) -> CGPath {
-    let radius = min(rect.height / 2, rect.width / 2, maxRadius)
-    return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
   }
 
   // Highlight for capsule mode: the candidate's text box, padded so that a small, even margin

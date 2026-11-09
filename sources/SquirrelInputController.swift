@@ -18,6 +18,14 @@ final class SquirrelInputController: IMKInputController {
   private var caretPos: Int = 0
   private var lastModifiers: NSEvent.ModifierFlags = .init()
   private var session: RimeSessionId = 0
+  /// Caret location expected after the last commit; see breakContextIfCaretMoved().
+  private var expectedCaret: Int?
+  /// Capsule bar expanded into a grid after paging; stays open until the composition changes.
+  private var gridExpanded = false
+  private var gridTopPage = 0
+  private var gridCompositionKey = ""
+  /// Global index of the grid's first candidate while expanded, so clicks can select any row.
+  private var gridStartIndex: Int?
   private var schemaId: String = ""
   private var inlinePreedit = false
   private var inlineCandidate = false
@@ -95,8 +103,12 @@ final class SquirrelInputController: IMKInputController {
     case .keyDown:
       // Let client apps handle Command shortcuts.
       if modifiers.contains(.command) {
+        // Command shortcuts (undo, paste, line jumps…) may change text around the caret.
+        breakContext()
         break
       }
+
+      breakContextIfCaretMoved()
 
       let keyCode = event.keyCode
       var keyChars = event.charactersIgnoringModifiers
@@ -111,6 +123,11 @@ final class SquirrelInputController: IMKInputController {
                                                            caps: modifiers.contains(.capsLock))
         if rimeKeycode != 0 {
           let rimeModifiers = SquirrelKeycode.osxModifiersToRime(modifiers: modifiers)
+          if gridExpanded && rimeKeycode == UInt32(XK_minus) && rimeModifiers == 0 {
+            // Like the native candidate bar: "-" in the expanded grid goes back to the first page and folds it up.
+            collapseGrid()
+            return true
+          }
           handled = processKey(rimeKeycode, modifiers: rimeModifiers)
           rimeUpdate()
         }
@@ -123,12 +140,54 @@ final class SquirrelInputController: IMKInputController {
     return handled
   }
 
+  /// Tells librime plugins that the next commit does not follow the previous one,
+  /// e.g. context-aware prediction scripts listening for the `_break_context` option.
+  func breakContext() {
+    expectedCaret = nil
+    guard session != 0 else { return }
+    rimeAPI.set_option(session, "_break_context", true)
+  }
+
+  /// Before a new composition starts, compares the caret with where the last commit left it.
+  /// Clicks, menu shortcuts (undo, paste) and focus changes inside the client never reach the
+  /// input method, but they all show up as a moved caret or a non-empty selection.
+  func breakContextIfCaretMoved() {
+    guard let expected = expectedCaret, session != 0 else { return }
+    if let input = rimeAPI.get_input(session), input.pointee != 0 {
+      return  // still composing; check again after the next commit
+    }
+    expectedCaret = nil
+    guard let current = client?.selectedRange(), current.location != NSNotFound else { return }
+    if current.location != expected || current.length > 0 {
+      breakContext()
+    }
+  }
+
+  /// Where the caret should be after `string` replaces the marked text (or the selection).
+  func caretAfterInserting(_ string: String, into client: IMKTextInput) -> Int? {
+    let marked = client.markedRange()
+    let base = marked.location != NSNotFound && marked.length > 0 ? marked : client.selectedRange()
+    guard base.location != NSNotFound else { return nil }
+    return base.location + (string as NSString).length
+  }
+
   func selectCandidate(_ index: Int) -> Bool {
-    let success = rimeAPI.select_candidate_on_current_page(session, index)
+    let success = if let start = gridStartIndex {
+      rimeAPI.select_candidate(session, start + index)
+    } else {
+      rimeAPI.select_candidate_on_current_page(session, index)
+    }
     if success {
       rimeUpdate()
     }
     return success
+  }
+
+  /// Returns to the first page and shows the single bar again.
+  func collapseGrid() {
+    gridExpanded = false
+    _ = rimeAPI.highlight_candidate(session, 0)
+    rimeUpdate()
   }
 
   // swiftlint:disable:next identifier_name
@@ -189,6 +248,8 @@ final class SquirrelInputController: IMKInputController {
       lastModifiers.remove(.capsLock)
     }
     preedit = ""
+    // Focus came back or moved to another field: the caret context is unknown.
+    breakContext()
     if session != 0 {
       let state = rimeAPI.get_option(session, "ascii_mode")
       let label = rimeAPI.get_state_label_abbreviated(session, "ascii_mode", state, true).asString
@@ -548,11 +609,42 @@ private extension SquirrelInputController {
       // swiftlint:enable identifier_name
       let page = Int(ctx.menu.page_no)
       let lastPage = ctx.menu.is_last_page
+      var highlighted = Int(ctx.menu.highlighted_candidate_index)
+
+      // Expanded grid: show neighbouring pages as extra rows around the current one.
+      var gridColumns = 0
+      var gridRow = 0
+      gridStartIndex = nil
+      let compositionKey = "\(preedit)|\(ctx.composition.sel_start)|\(ctx.composition.sel_end)|\(ctx.composition.cursor_pos)"
+      if compositionKey != gridCompositionKey || numCandidates == 0 {
+        gridExpanded = false
+        gridCompositionKey = compositionKey
+      }
+      let rows = NSApp.squirrelAppDelegate.panel?.expandRows ?? 0
+      let pageSize = Int(ctx.menu.page_size)
+      if rows > 1 && pageSize > 0 && numCandidates > 0 {
+        if !gridExpanded && page > 0 {
+          gridExpanded = true
+          gridTopPage = 0
+        }
+        if gridExpanded {
+          gridTopPage = min(max(gridTopPage, page - rows + 1), page)
+          let (gridCandidates, gridComments) = fetchCandidates(from: gridTopPage * pageSize, count: rows * pageSize)
+          if gridCandidates.count > (page - gridTopPage) * pageSize {
+            candidates = gridCandidates
+            comments = gridComments
+            gridRow = page - gridTopPage
+            highlighted += gridRow * pageSize
+            gridColumns = pageSize
+            gridStartIndex = gridTopPage * pageSize
+          }
+        }
+      }
 
       let selRange = NSRange(location: start.utf16Offset(in: preedit), length: preedit.utf16.distance(from: start, to: end))
       showPanel(preedit: inlinePreedit ? "" : preedit, selRange: selRange, caretPos: caretPos.utf16Offset(in: preedit),
-                candidates: candidates, comments: comments, labels: labels, highlighted: Int(ctx.menu.highlighted_candidate_index),
-                page: page, lastPage: lastPage)
+                candidates: candidates, comments: comments, labels: labels, highlighted: highlighted,
+                page: page, lastPage: lastPage, gridColumns: gridColumns, gridRow: gridRow)
       _ = rimeAPI.free_context(&ctx)
     } else {
       hidePalettes()
@@ -578,6 +670,7 @@ private extension SquirrelInputController {
       )
     }
 
+    expectedCaret = caretAfterInserting(string, into: client)
     client.insertText(string, replacementRange: .empty)
     preedit = ""
     hidePalettes()
@@ -605,8 +698,23 @@ private extension SquirrelInputController {
     client.setMarkedText(attrString, selectionRange: NSRange(location: caretPos, length: 0), replacementRange: .empty)
   }
 
+  /// Reads `count` candidates of the current segment starting at a global index.
+  func fetchCandidates(from startIndex: Int, count: Int) -> ([String], [String]) {
+    var candidates = [String]()
+    var comments = [String]()
+    var iterator = RimeCandidateListIterator()
+    guard rimeAPI.candidate_list_from_index(session, &iterator, Int32(startIndex)) else { return ([], []) }
+    while candidates.count < count && rimeAPI.candidate_list_next(&iterator) {
+      candidates.append(iterator.candidate.text.map { String(cString: $0) } ?? "")
+      comments.append(iterator.candidate.comment.map { String(cString: $0) } ?? "")
+    }
+    rimeAPI.candidate_list_end(&iterator)
+    return (candidates, comments)
+  }
+
   // swiftlint:disable:next function_parameter_count
-  func showPanel(preedit: String, selRange: NSRange, caretPos: Int, candidates: [String], comments: [String], labels: [String], highlighted: Int, page: Int, lastPage: Bool) {
+  func showPanel(preedit: String, selRange: NSRange, caretPos: Int, candidates: [String], comments: [String], labels: [String], highlighted: Int,
+                 page: Int, lastPage: Bool, gridColumns: Int = 0, gridRow: Int = 0) {
     guard let client = client else { return }
     var inputPos = NSRect()
     client.attributes(forCharacterIndex: 0, lineHeightRectangle: &inputPos)
@@ -614,7 +722,8 @@ private extension SquirrelInputController {
       panel.position = inputPos
       panel.inputController = self
       panel.update(preedit: preedit, selRange: selRange, caretPos: caretPos, candidates: candidates, comments: comments, labels: labels,
-                   highlighted: highlighted, page: page, lastPage: lastPage, update: true)
+                   highlighted: highlighted, page: page, lastPage: lastPage, update: true,
+                   gridColumns: gridColumns, gridRow: gridRow)
     }
   }
 

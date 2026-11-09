@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import os
 
 final class SquirrelPanel: NSPanel {
   private let view: SquirrelView
@@ -32,6 +33,26 @@ final class SquirrelPanel: NSPanel {
   private var page: Int = 0
   private var lastPage: Bool = true
   private var pagingUp: Bool?
+  // Expanded grid: candidates are laid out `gridColumns` per row (one Rime page per row); 0 = single bar.
+  private var gridColumns: Int = 0
+  // Row holding Rime's current page; only its labels are shown, since select keys act on the current page.
+  private var gridRow: Int = 0
+  // Lets a grid row be wider than the usual wrapping width.
+  private var minTextWidth: CGFloat = 0
+  // Size animation of the capsule panel (grid expanding / collapsing, bar width changing).
+  fileprivate struct Reveal {
+    var from: NSSize
+    var to: NSSize
+    var fromRadius: CGFloat
+    var toRadius: CGFloat
+    var start: CFTimeInterval
+    var duration: CFTimeInterval
+    var finalFrame: NSRect
+    var naturalSize: NSSize
+  }
+  private var reveal: Reveal?
+  private static let logger = Logger(subsystem: "im.rime.inputmethod.Squirrel", category: "panel")
+  private var revealTimer: Timer?
 
   init(position: NSRect) {
     self.position = position
@@ -48,6 +69,7 @@ final class SquirrelPanel: NSPanel {
     contentView.addSubview(back)
     contentView.addSubview(view)
     contentView.addSubview(view.textView)
+    view.textView.wantsLayer = true
     self.contentView = contentView
   }
 
@@ -62,6 +84,9 @@ final class SquirrelPanel: NSPanel {
   }
   var inlineCandidate: Bool {
     view.currentTheme.inlineCandidate
+  }
+  var expandRows: Int {
+    view.currentTheme.expandRows
   }
 
   // swiftlint:disable:next cyclomatic_complexity
@@ -143,6 +168,7 @@ final class SquirrelPanel: NSPanel {
   }
 
   func hide() {
+    stopReveal()
     statusTimer?.invalidate()
     statusTimer = nil
     orderOut(nil)
@@ -150,8 +176,11 @@ final class SquirrelPanel: NSPanel {
   }
 
   // swiftlint:disable:next cyclomatic_complexity function_parameter_count
-  func update(preedit: String, selRange: NSRange, caretPos: Int, candidates: [String], comments: [String], labels: [String], highlighted index: Int, page: Int, lastPage: Bool, update: Bool) {
+  func update(preedit: String, selRange: NSRange, caretPos: Int, candidates: [String], comments: [String], labels: [String], highlighted index: Int, page: Int, lastPage: Bool, update: Bool,
+              gridColumns: Int = 0, gridRow: Int = 0) {
     if update {
+      self.gridColumns = gridColumns
+      self.gridRow = gridRow
       self.preedit = preedit
       self.selRange = selRange
       self.caretPos = caretPos
@@ -203,19 +232,29 @@ final class SquirrelPanel: NSPanel {
       highlightedPreeditRange = .empty
     }
 
+    let columns = theme.isCapsule ? self.gridColumns : 0
+    let isGrid = columns > 0
+    var columnWidths = [CGFloat](repeating: 0, count: max(columns, 0))
     var candidateRanges = [NSRange]()
     for i in 0..<candidates.count {
       let attrs = i == index ? theme.highlightedAttrs : theme.attrs
-      let labelAttrs = i == index ? theme.labelHighlightedAttrs : theme.labelAttrs
+      var labelAttrs = i == index ? theme.labelHighlightedAttrs : theme.labelAttrs
+      // Position within the Rime page, which is what labels and comment marks refer to.
+      let pageIndex = isGrid ? (i / columns == gridRow ? i % columns : -1) : i
+      if isGrid && pageIndex < 0 {
+        // Keep the label's width so columns stay aligned, but hide it: select keys only reach the current row.
+        labelAttrs[.foregroundColor] = NSColor.clear
+      }
       var commentAttrs = i == index ? theme.commentHighlightedAttrs : theme.commentAttrs
 
+      let labelIndex = isGrid ? i % columns : i
       let label = if theme.candidateFormat.contains(/\[label\]/) {
-        if labels.count > 1 && i < labels.count {
-          labels[i]
-        } else if labels.count == 1 && i < labels.first!.count {
-          String(labels.first![labels.first!.index(labels.first!.startIndex, offsetBy: i)])
+        if labels.count > 1 && labelIndex < labels.count {
+          labels[labelIndex]
+        } else if labels.count == 1 && labelIndex < labels.first!.count {
+          String(labels.first![labels.first!.index(labels.first!.startIndex, offsetBy: labelIndex)])
         } else {
-          "\(i+1)"
+          "\(labelIndex+1)"
         }
       } else {
         ""
@@ -231,9 +270,9 @@ final class SquirrelPanel: NSPanel {
       }
       // Apply semantic accent/warning colors only for non-highlighted rows
       if let inputController, !inputController.specialCommentIndices.isEmpty && i != index {
-        if let accent = inputController.specialCommentIndices[.commentHighlight], accent.contains(i) {
+        if let accent = inputController.specialCommentIndices[.commentHighlight], accent.contains(pageIndex) {
           commentAttrs[.foregroundColor] = theme.accentCommentTextColor
-        } else if let warning = inputController.specialCommentIndices[.commentWarning], warning.contains(i) {
+        } else if let warning = inputController.specialCommentIndices[.commentWarning], warning.contains(pageIndex) {
           commentAttrs[.foregroundColor] = theme.warningCommentTextColor
         }
       }
@@ -256,7 +295,10 @@ final class SquirrelPanel: NSPanel {
       }
 
       let lineSeparator: NSAttributedString
-      if theme.isCapsule {
+      if isGrid {
+        // Rows are paragraphs; cells within a row are aligned by the tab stops set up below.
+        lineSeparator = NSAttributedString(string: i % columns == 0 ? "\n" : "\t", attributes: attrs)
+      } else if theme.isCapsule {
         // Leave room for the highlight padding on both sides plus a small gap, like the native candidate bar.
         // Built from fixed-width spaces rather than kerning: TextKit attributes part of a kern to the next
         // character's selection rect, which would push the highlight off-center.
@@ -285,8 +327,33 @@ final class SquirrelPanel: NSPanel {
       }
       line.addAttribute(.paragraphStyle, value: paragraphStyleCandidate, range: NSRange(location: 0, length: line.length))
 
+      if isGrid {
+        columnWidths[i % columns] = max(columnWidths[i % columns], ceil(line.size().width))
+      }
       candidateRanges.append(NSRange(location: text.length, length: line.length))
       text.append(line)
+    }
+
+    minTextWidth = 0
+    if isGrid, let first = candidateRanges.first {
+      // One paragraph style for the whole grid: tab stops at each column's left edge, and room between rows
+      // for the highlight padding.
+      let gap = theme.capsuleSeparatorWidth
+      let style = theme.paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+      style.paragraphSpacingBefore = 0
+      style.lineSpacing = 0
+      style.headIndent = 0
+      style.paragraphSpacing = theme.capsulePadding.height * 2 + 6
+      var stops = [NSTextTab]()
+      var location: CGFloat = 0
+      for width in columnWidths.dropLast() {
+        location += width + gap
+        stops.append(NSTextTab(textAlignment: .left, location: location))
+      }
+      style.tabStops = stops
+      style.defaultTabInterval = 0
+      text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: first.location, length: text.length - first.location))
+      minTextWidth = location + (columnWidths.last ?? 0) + 2
     }
 
     view.textView.textContentStorage?.attributedString = text
@@ -301,6 +368,7 @@ final class SquirrelPanel: NSPanel {
     // Keep very tall wrapped text from auto-scrolling past the first line.
     view.textView.scrollToBeginningOfDocument(nil)
 
+    view.isGrid = isGrid
     view.drawView(candidateRanges: candidateRanges, hilightedIndex: index, preeditRange: preeditRange, highlightedPreeditRange: highlightedPreeditRange, canPageUp: page > 0, canPageDown: !lastPage)
     show()
   }
@@ -361,7 +429,7 @@ private extension SquirrelPanel {
     } else {
       screenRect.width * textWidthRatio - theme.edgeInset.width * 2
     }
-    return maxWidth
+    return max(maxWidth, min(minTextWidth, screenRect.width * 0.9))
   }
 
   // swiftlint:disable:next cyclomatic_complexity
@@ -436,6 +504,11 @@ private extension SquirrelPanel {
       }
     }
 
+    if theme.isCapsule && !requiresFullScreen {
+      // Whole points keep the size stable between redraws, so unchanged content never starts a size animation.
+      naturalPanelSize = NSSize(width: ceil(naturalPanelSize.width), height: ceil(naturalPanelSize.height))
+    }
+
     var panelRect = NSRect.zero
 
     if requiresFullScreen {
@@ -493,15 +566,44 @@ private extension SquirrelPanel {
       if panelRect.minY < screenRect.minY { panelRect.origin.y = screenRect.minY }
     }
 
-    self.setFrame(panelRect, display: true)
+    // Animate size changes of a visible capsule panel whose top-left corner stays put: the window takes the
+    // larger of the shown and the new size, and the drawn background and text clip ease towards the new size.
+    let shownSize = reveal.map { revealSize($0, at: CACurrentMediaTime()) } ?? frame.size
+    let sizeChanged = abs(shownSize.width - panelRect.width) > 1 || abs(shownSize.height - panelRect.height) > 1
+    if isVisible && sizeChanged && theme.isCapsule && theme.pagingOffset == 0 && !requiresFullScreen &&
+        abs(frame.minX - panelRect.minX) < 0.5 && abs(frame.maxY - panelRect.maxY) < 0.5 {
+      let fromRadius = view.revealRadius ?? view.capsuleRadius(for: shownSize)
+      let width = max(shownSize.width, panelRect.width)
+      let height = max(shownSize.height, panelRect.height)
+      let windowRect = NSRect(x: panelRect.minX, y: panelRect.maxY - height, width: width, height: height)
+      layout(frame: windowRect, naturalSize: windowRect.size)
+      startReveal(Reveal(from: shownSize, to: panelRect.size, fromRadius: fromRadius, toRadius: view.capsuleRadius(for: panelRect.size),
+                         start: CACurrentMediaTime(), duration: abs(shownSize.height - panelRect.height) > 0.5 ? 0.22 : 0.14,
+                         finalFrame: panelRect, naturalSize: naturalPanelSize))
+    } else {
+      stopReveal()
+      layout(frame: panelRect, naturalSize: naturalPanelSize)
+    }
+    // Draw now, in the same frame as the window resize, so stale layers are never shown at the new size.
+    view.displayIfNeeded()
+
+    alphaValue = theme.alpha
+    invalidateShadow()
+    orderFront(nil)
+    // voila!
+  }
+
+  func layout(frame frameRect: NSRect, naturalSize: NSSize) {
+    let theme = view.currentTheme
+    self.setFrame(frameRect, display: true)
 
     // Keep the window frame at the scaled physical size while drawing in natural coordinates through bounds.
-    contentView!.frame = NSRect(origin: .zero, size: panelRect.size)
-    contentView!.bounds = NSRect(origin: .zero, size: naturalPanelSize)
+    contentView!.frame = NSRect(origin: .zero, size: frameRect.size)
+    contentView!.bounds = NSRect(origin: .zero, size: naturalSize)
 
     if vertical {
       contentView!.boundsRotation = -90
-      contentView!.setBoundsOrigin(NSPoint(x: 0, y: naturalPanelSize.width))
+      contentView!.setBoundsOrigin(NSPoint(x: 0, y: naturalSize.width))
     } else {
       contentView!.boundsRotation = 0
       contentView!.setBoundsOrigin(.zero)
@@ -528,15 +630,66 @@ private extension SquirrelPanel {
     } else {
       back.isHidden = true
     }
+  }
 
-    alphaValue = theme.alpha
+  func startReveal(_ animation: Reveal) {
+    Self.logger.debug("size animation \(animation.from.debugDescription, privacy: .public) -> \(animation.to.debugDescription, privacy: .public)")
+    reveal = animation
+    applyReveal(at: animation.start)
+    if revealTimer == nil {
+      let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+        guard let self, let reveal = self.reveal else { return }
+        let now = CACurrentMediaTime()
+        if now - reveal.start >= reveal.duration {
+          self.stopReveal()
+          self.layout(frame: reveal.finalFrame, naturalSize: reveal.naturalSize)
+          self.view.displayIfNeeded()
+          self.invalidateShadow()
+        } else {
+          self.applyReveal(at: now)
+        }
+      }
+      RunLoop.main.add(timer, forMode: .common)
+      revealTimer = timer
+    }
+  }
+
+  func stopReveal() {
+    revealTimer?.invalidate()
+    revealTimer = nil
+    reveal = nil
+    if view.revealSize != nil {
+      view.revealSize = nil
+      view.revealRadius = nil
+      view.needsDisplay = true
+    }
+  }
+
+  func revealProgress(_ animation: Reveal, at time: CFTimeInterval) -> CGFloat {
+    let t = min(1, max(0, (time - animation.start) / animation.duration))
+    return 1 - pow(1 - t, 3)  // ease out
+  }
+
+  func revealSize(_ animation: Reveal, at time: CFTimeInterval) -> NSSize {
+    let p = revealProgress(animation, at: time)
+    return NSSize(width: animation.from.width + (animation.to.width - animation.from.width) * p,
+                  height: animation.from.height + (animation.to.height - animation.from.height) * p)
+  }
+
+  func applyReveal(at time: CFTimeInterval) {
+    guard let animation = reveal else { return }
+    let p = revealProgress(animation, at: time)
+    view.revealSize = revealSize(animation, at: time)
+    view.revealRadius = animation.fromRadius + (animation.toRadius - animation.fromRadius) * p
+    view.needsDisplay = true
+    view.displayIfNeeded()
     invalidateShadow()
-    orderFront(nil)
-    // voila!
   }
 
   func show(status message: String) {
     let theme = view.currentTheme
+    minTextWidth = 0
+    view.isGrid = false
     let text = NSMutableAttributedString(string: message, attributes: theme.attrs)
     text.addAttribute(.paragraphStyle, value: theme.paragraphStyle, range: NSRange(location: 0, length: text.length))
     view.textContentStorage.attributedString = text
